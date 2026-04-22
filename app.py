@@ -184,9 +184,21 @@ def main():
         st.info("👈 Configure your scan in the sidebar and click **Run Scan** to get started.")
 
         # Show a quick stats overview even before running
-        with st.spinner("Loading market data..."):
-            stock_data, failed = fetch_all_stocks_data(NIFTY50_TICKERS, period_days=365)
-            indicators_list, calc_failed = calculate_all_indicators(stock_data)
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+
+        def update_progress(current, total, ticker):
+            progress_text.text(f"Loading {ticker}... ({current}/{total})")
+            progress_bar.progress(current / total)
+
+        stock_data, failed = fetch_all_stocks_data(
+            NIFTY50_TICKERS,
+            period_days=365,
+            progress_callback=update_progress
+        )
+        indicators_list, calc_failed = calculate_all_indicators(stock_data)
+        progress_text.empty()
+        progress_bar.empty()
 
         if indicators_list:
             df = pd.DataFrame(indicators_list)
@@ -210,11 +222,26 @@ def main():
     # ── Run the Scan ────────────────────────────────────────────────────
     start_time = time.time()
 
-    with st.spinner("Fetching market data and calculating indicators..."):
-        if scan_mode == "Preset Scans":
-            result_df, failed_tickers, total_scanned = run_preset_scan(filters["preset"])
-        else:
-            result_df, failed_tickers, total_scanned = run_custom_screener(**filters)
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+
+    def update_progress(current, total, ticker):
+        progress_text.text(f"Scanning {ticker}... ({current}/{total})")
+        progress_bar.progress(current / total)
+
+    if scan_mode == "Preset Scans":
+        result_df, failed_tickers, total_scanned = run_preset_scan(
+            filters["preset"],
+            progress_callback=update_progress
+        )
+    else:
+        result_df, failed_tickers, total_scanned = run_custom_screener(
+            progress_callback=update_progress,
+            **filters
+        )
+
+    progress_text.empty()
+    progress_bar.empty()
 
     elapsed = time.time() - start_time
 

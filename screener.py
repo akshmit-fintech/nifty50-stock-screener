@@ -5,7 +5,7 @@ Provides preset scans and custom filter support for technical indicator-based
 stock screening.
 """
 
-from typing import Optional
+from typing import Optional, Callable
 import pandas as pd
 
 from data import fetch_all_stocks_data
@@ -104,12 +104,13 @@ def _apply_filters(
     return df[mask].copy()
 
 
-def run_preset_scan(preset_name: str) -> tuple[pd.DataFrame, list[str], int]:
+def run_preset_scan(preset_name: str, progress_callback: Optional[Callable] = None) -> tuple[pd.DataFrame, list[str], int]:
     """
     Run a prebuilt scan preset.
 
     Args:
         preset_name: Key from SCAN_PRESETS dict
+        progress_callback: Optional callback(current, total, ticker) for UI progress
 
     Returns:
         Tuple of (filtered DataFrame, failed tickers list, total stocks scanned)
@@ -118,7 +119,11 @@ def run_preset_scan(preset_name: str) -> tuple[pd.DataFrame, list[str], int]:
         raise ValueError(f"Unknown preset: {preset_name}. Available: {list(SCAN_PRESETS.keys())}")
 
     # Fetch all data (cached)
-    stock_data, failed = fetch_all_stocks_data(NIFTY50_TICKERS, period_days=365)
+    stock_data, failed = fetch_all_stocks_data(
+        NIFTY50_TICKERS,
+        period_days=365,
+        progress_callback=progress_callback
+    )
 
     # Calculate indicators
     indicators_list, calc_failed = calculate_all_indicators(stock_data)
@@ -142,6 +147,7 @@ def run_custom_screener(
     macd_bullish: bool = False,
     volume_spike: bool = False,
     pct_from_52w_low_max: Optional[float] = None,
+    progress_callback: Optional[Callable] = None,
 ) -> tuple[pd.DataFrame, list[str], int]:
     """
     Run a custom screener with user-defined filters.
@@ -154,12 +160,17 @@ def run_custom_screener(
         macd_bullish: Filter for MACD bullish crossover
         volume_spike: Filter for volume spike
         pct_from_52w_low_max: Max % distance from 52-week low
+        progress_callback: Optional callback(current, total, ticker) for UI progress
 
     Returns:
         Tuple of (filtered DataFrame, failed tickers list, total stocks scanned)
     """
     # Fetch all data (cached)
-    stock_data, failed = fetch_all_stocks_data(NIFTY50_TICKERS, period_days=365)
+    stock_data, failed = fetch_all_stocks_data(
+        NIFTY50_TICKERS,
+        period_days=365,
+        progress_callback=progress_callback
+    )
 
     # Calculate indicators
     indicators_list, calc_failed = calculate_all_indicators(stock_data)

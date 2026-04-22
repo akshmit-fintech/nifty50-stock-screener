@@ -91,9 +91,9 @@ The app opens in your browser at **`http://localhost:8501`**.
 
 ## Live Demo
 
-🚀 **Try it here:** [Nifty 50 Screener on Streamlit Cloud](https://share.streamlit.io/your-username/nifty-screener/main/app.py)
+🚀 **Try it here:** [Nifty 50 Screener on Streamlit Cloud](https://akshmit-fintech-nifty50-stock-screener.streamlit.app/)
 
-*(Replace with your actual deployment URL after pushing to GitHub and deploying to Streamlit Cloud)*
+[GitHub Repository](https://github.com/akshmit-fintech/nifty50-stock-screener)
 
 ---
 

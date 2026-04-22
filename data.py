@@ -9,21 +9,24 @@ Columns returned by stock_df:
     VWAP, VOLUME, VALUE, NO OF TRADES, DELIVERY QTY, DELIVERY %, SYMBOL
 """
 
-from typing import Optional
+from typing import Optional, Callable
 import logging
 import functools
 import os
 import warnings
+import tempfile
 
 # Suppress harmless numpy datetime64 timezone warning from jugaad-data
 warnings.filterwarnings("ignore", message="no explicit representation of timezones available for np.datetime64")
 
-# Fix jugaad-data cache directory on Windows to avoid WinError 183
-os.environ["JUGAAD_DATA_CACHE_DIR"] = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".jugaad_cache"
-)
+# Fix jugaad-data cache directory to avoid conflicts on Windows AND Linux
+# Use a temp directory that is guaranteed to be writable and empty on fresh deploys
+_CACHE_DIR = os.path.join(tempfile.gettempdir(), "nifty_screener_cache")
+os.makedirs(_CACHE_DIR, exist_ok=True)
+os.environ["JUGAAD_DATA_CACHE_DIR"] = _CACHE_DIR
 
 from datetime import date, timedelta
+import time
 import pandas as pd
 
 from tickers import NIFTY50_TICKERS
@@ -54,9 +57,7 @@ except ImportError:
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Standardize jugaad-data column names to match yfinance-style OHLCV.
-    jugaad-data returns uppercase column names; we lowercase them.
     """
-    # Rename to lowercase for consistency
     rename_map = {
         "DATE": "Date",
         "OPEN": "Open",
@@ -76,7 +77,6 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
-    # Ensure Date is datetime and set as index
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date")
@@ -116,7 +116,6 @@ def fetch_stock_data(ticker: str, period_days: int = 365) -> Optional[pd.DataFra
 
         df = _standardize_columns(df)
 
-        # Ensure required columns exist
         required = ["Open", "High", "Low", "Close", "Volume"]
         missing = [c for c in required if c not in df.columns]
         if missing:
@@ -130,41 +129,45 @@ def fetch_stock_data(ticker: str, period_days: int = 365) -> Optional[pd.DataFra
         return None
 
 
-@_cache_decorator
-def fetch_all_stocks_data(tickers: list[str], period_days: int = 365) -> tuple[dict[str, pd.DataFrame], list[str]]:
+def fetch_all_stocks_data(
+    tickers: list[str],
+    period_days: int = 365,
+    delay: float = 0.15,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> tuple[dict[str, pd.DataFrame], list[str]]:
     """
     Fetch data for multiple tickers sequentially.
-
-    jugaad-data has built-in caching and NSE does not rate-limit aggressively,
-    but we still add small delays to be polite.
 
     Args:
         tickers: List of NSE ticker symbols (no .NS suffix)
         period_days: Number of days of history.
+        delay: Seconds between requests. Default 0.15s — NSE is tolerant,
+               and this keeps 50-stock fetch under ~15 seconds.
+        progress_callback: Optional callback(current, total, ticker) for UI progress bars.
 
     Returns:
         Tuple of (dict mapping ticker -> DataFrame, list of failed tickers)
     """
-    import time
-
     failed: list[str] = []
     results: dict[str, pd.DataFrame] = {}
 
     for i, ticker in enumerate(tickers):
+        if progress_callback:
+            progress_callback(i + 1, len(tickers), ticker)
+
         df = fetch_stock_data(ticker, period_days)
         if df is not None:
             results[ticker] = df
         else:
             failed.append(ticker)
-        # Small delay to be polite to NSE servers
+
         if i < len(tickers) - 1:
-            time.sleep(0.3)
+            time.sleep(delay)
 
     return results, failed
 
 
 if __name__ == "__main__":
-    # Quick test
     print("Testing data fetch for RELIANCE...")
     df = fetch_stock_data("RELIANCE", period_days=30)
     if df is not None:
