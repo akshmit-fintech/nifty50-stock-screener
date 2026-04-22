@@ -9,22 +9,39 @@ from typing import Optional, Callable
 import logging
 import functools
 import os
+import shutil
 import warnings
-import tempfile
 
-# Suppress harmless numpy datetime64 timezone warning from jugaad-data
+# ── Suppress harmless numpy datetime64 timezone warning ──────────────────────
 warnings.filterwarnings("ignore", message="no explicit representation of timezones available for np.datetime64")
 
-# ── CRITICAL: Disable jugaad-data's internal disk cache ──────────────────────
-# This prevents [Errno 17] File exists errors on Streamlit Cloud's ephemeral
-# filesystem where file/directory cache conflicts occur. We use Streamlit's
-# @st.cache_data instead, which is more reliable.
+# ── CRITICAL FIX: Disable jugaad-data's disk cache ───────────────────────────
+# jugaad-data's @cached decorator creates directories under ~/.cache/ which
+# causes [Errno 17] File exists on Streamlit Cloud's ephemeral filesystem.
+# We pre-emptively remove any existing cache, then monkey-patch the decorator
+# to a no-op BEFORE importing any jugaad_data modules.
 # ──────────────────────────────────────────────────────────────────────────────
+
+# 1. Remove any existing problematic cache paths
+for _cache_path in [
+    os.path.expanduser("~/.cache/nsehistory-stock"),
+    os.path.expanduser("~/.cache/nsehistory"),
+]:
+    if os.path.exists(_cache_path):
+        try:
+            if os.path.isdir(_cache_path):
+                shutil.rmtree(_cache_path)
+            else:
+                os.remove(_cache_path)
+        except Exception:
+            pass
+
+# 2. Monkey-patch the @cached decorator to do nothing
 try:
     import jugaad_data.util as _jutil
 
     def _noop_cached(*cache_args, **cache_kwargs):
-        """Pass-through decorator that disables jugaad-data's disk caching."""
+        """Pass-through decorator that disables disk caching entirely."""
         def decorator(func):
             return func
         return decorator
@@ -33,6 +50,7 @@ try:
 except Exception:
     pass
 
+# ── Now safe to import jugaad_data modules ──────────────────────────────────
 from datetime import date, timedelta
 import time
 import pandas as pd

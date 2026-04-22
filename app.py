@@ -72,7 +72,6 @@ def style_bool(val):
 # --------------------------------------------------------------------------
 def render_mini_chart(ticker: str):
     """Render a Plotly line chart showing price + SMA50 + SMA200."""
-    # Fetch 6 months of raw data for chart (cached per ticker)
     df = fetch_stock_data(ticker, period_days=180)
     if df is None or df.empty:
         st.warning(f"No chart data for {ticker}")
@@ -80,32 +79,23 @@ def render_mini_chart(ticker: str):
 
     fig = go.Figure()
 
-    # Price line
     fig.add_trace(go.Scatter(
-        x=df.index,
-        y=df["Close"],
-        mode="lines",
-        name="Price",
+        x=df.index, y=df["Close"],
+        mode="lines", name="Price",
         line=dict(color="#00D4AA", width=2),
     ))
 
-    # SMA 50
     sma50 = df["Close"].rolling(window=50).mean()
     fig.add_trace(go.Scatter(
-        x=df.index,
-        y=sma50,
-        mode="lines",
-        name="SMA 50",
+        x=df.index, y=sma50,
+        mode="lines", name="SMA 50",
         line=dict(color="#FFD93D", width=1.5, dash="dash"),
     ))
 
-    # SMA 200
     sma200 = df["Close"].rolling(window=200).mean()
     fig.add_trace(go.Scatter(
-        x=df.index,
-        y=sma200,
-        mode="lines",
-        name="SMA 200",
+        x=df.index, y=sma200,
+        mode="lines", name="SMA 200",
         line=dict(color="#FF6B6B", width=1.5, dash="dot"),
     ))
 
@@ -130,8 +120,6 @@ def main():
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST")
 
     # ── Load Data ONCE (cached for 1 hour) ──────────────────────────────
-    # This fetches all 50 stocks on first load, then is instant on refreshes.
-    # Changing presets does NOT re-fetch — it only re-filters.
     if "indicators_df" not in st.session_state:
         progress_text = st.empty()
         progress_bar = st.progress(0)
@@ -152,6 +140,10 @@ def main():
 
     indicators_df = st.session_state.indicators_df
     failed_tickers = st.session_state.failed_tickers
+
+    if indicators_df.empty:
+        st.error("❌ Failed to load stock data. Please refresh the page.")
+        return
 
     # ── Sidebar ─────────────────────────────────────────────────────────
     st.sidebar.header("🔍 Scan Settings")
@@ -200,8 +192,9 @@ def main():
             "pct_from_52w_low_max": pct_from_52w_low_max if pct_from_52w_low_max < 100 else None,
         }
 
-    # ── Stats Overview (always visible) ─────────────────────────────────
-    if not indicators_df.empty:
+    # ── Main Content ────────────────────────────────────────────────────
+    if not run_button:
+        # Show market overview stats + prompt BEFORE any scan is run
         total = len(indicators_df)
         above_200sma = (indicators_df["price"] > indicators_df["sma200"]).sum()
         oversold = (indicators_df["rsi"] < 30).sum()
@@ -212,15 +205,10 @@ def main():
         c2.metric("Above 200-SMA", f"{above_200sma}", f"{above_200sma/total*100:.0f}%")
         c3.metric("Oversold (RSI<30)", f"{oversold}", delta=None, delta_color="inverse")
         c4.metric("Overbought (RSI>70)", f"{overbought}", delta=None, delta_color="inverse")
-    else:
-        st.error("❌ Failed to load stock data. Please refresh the page.")
-        return
 
-    if failed_tickers:
-        st.warning(f"⚠️ Failed to load {len(failed_tickers)} tickers: {', '.join(failed_tickers[:5])}{'...' if len(failed_tickers) > 5 else ''}")
+        if failed_tickers:
+            st.warning(f"⚠️ Failed to load {len(failed_tickers)} tickers: {', '.join(failed_tickers[:5])}{'...' if len(failed_tickers) > 5 else ''}")
 
-    # ── Main Content ────────────────────────────────────────────────────
-    if not run_button:
         st.info("👈 Choose a preset scan or custom filters, then click **Run Scan**.")
         return
 
@@ -242,7 +230,7 @@ def main():
 
     elapsed = time.time() - start_time
 
-    # ── Metrics Row ─────────────────────────────────────────────────────
+    # ── Scan Results Metrics ────────────────────────────────────────────
     matched = len(result_df)
     c1, c2, c3 = st.columns(3)
     c1.metric("Stocks Matched", f"{matched}/{total_scanned}")
@@ -256,7 +244,6 @@ def main():
     # ── Results Table ───────────────────────────────────────────────────
     st.subheader("📋 Scan Results")
 
-    # Sort by RSI ascending (most oversold first)
     if "rsi" in result_df.columns:
         result_df = result_df.sort_values("rsi", ascending=True, na_position="last")
 
