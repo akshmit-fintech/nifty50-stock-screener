@@ -3,10 +3,6 @@ Data fetching module for Nifty 50 stock screener.
 
 Uses jugaad-data to fetch historical OHLCV data directly from NSE India.
 jugaad-data has built-in caching and does not have Yahoo Finance rate limits.
-
-Columns returned by stock_df:
-    DATE, SERIES, OPEN, HIGH, LOW, PREV. CLOSE, LTP, CLOSE,
-    VWAP, VOLUME, VALUE, NO OF TRADES, DELIVERY QTY, DELIVERY %, SYMBOL
 """
 
 from typing import Optional, Callable
@@ -19,11 +15,23 @@ import tempfile
 # Suppress harmless numpy datetime64 timezone warning from jugaad-data
 warnings.filterwarnings("ignore", message="no explicit representation of timezones available for np.datetime64")
 
-# Fix jugaad-data cache directory to avoid conflicts on Windows AND Linux
-# Use a temp directory that is guaranteed to be writable and empty on fresh deploys
-_CACHE_DIR = os.path.join(tempfile.gettempdir(), "nifty_screener_cache")
-os.makedirs(_CACHE_DIR, exist_ok=True)
-os.environ["JUGAAD_DATA_CACHE_DIR"] = _CACHE_DIR
+# ── CRITICAL: Disable jugaad-data's internal disk cache ──────────────────────
+# This prevents [Errno 17] File exists errors on Streamlit Cloud's ephemeral
+# filesystem where file/directory cache conflicts occur. We use Streamlit's
+# @st.cache_data instead, which is more reliable.
+# ──────────────────────────────────────────────────────────────────────────────
+try:
+    import jugaad_data.util as _jutil
+
+    def _noop_cached(*cache_args, **cache_kwargs):
+        """Pass-through decorator that disables jugaad-data's disk caching."""
+        def decorator(func):
+            return func
+        return decorator
+
+    _jutil.cached = _noop_cached
+except Exception:
+    pass
 
 from datetime import date, timedelta
 import time
@@ -46,7 +54,6 @@ try:
     import streamlit as st
     _cache_decorator = st.cache_data(ttl=3600, show_spinner=False)
 except ImportError:
-    # No-op cache decorator when streamlit is not installed
     def _cache_decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -55,9 +62,7 @@ except ImportError:
 
 
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Standardize jugaad-data column names to match yfinance-style OHLCV.
-    """
+    """Standardize jugaad-data column names to OHLCV format."""
     rename_map = {
         "DATE": "Date",
         "OPEN": "Open",
@@ -65,15 +70,6 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "LOW": "Low",
         "CLOSE": "Close",
         "VOLUME": "Volume",
-        "PREV. CLOSE": "PrevClose",
-        "LTP": "LTP",
-        "VWAP": "VWAP",
-        "VALUE": "Value",
-        "NO OF TRADES": "Trades",
-        "DELIVERY QTY": "DeliveryQty",
-        "DELIVERY %": "DeliveryPct",
-        "SYMBOL": "Symbol",
-        "SERIES": "Series",
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
@@ -141,8 +137,7 @@ def fetch_all_stocks_data(
     Args:
         tickers: List of NSE ticker symbols (no .NS suffix)
         period_days: Number of days of history.
-        delay: Seconds between requests. Default 0.15s — NSE is tolerant,
-               and this keeps 50-stock fetch under ~15 seconds.
+        delay: Seconds between requests. Default 0.15s.
         progress_callback: Optional callback(current, total, ticker) for UI progress bars.
 
     Returns:
@@ -165,14 +160,3 @@ def fetch_all_stocks_data(
             time.sleep(delay)
 
     return results, failed
-
-
-if __name__ == "__main__":
-    print("Testing data fetch for RELIANCE...")
-    df = fetch_stock_data("RELIANCE", period_days=30)
-    if df is not None:
-        print(f"Fetched {len(df)} rows")
-        print(f"Columns: {list(df.columns)}")
-        print(df.tail(3))
-    else:
-        print("Failed to fetch")

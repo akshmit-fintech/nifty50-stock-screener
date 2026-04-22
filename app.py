@@ -14,9 +14,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import fetch_all_stocks_data
-from indicators import calculate_all_indicators
-from screener import SCAN_PRESETS, run_preset_scan, run_custom_screener
+from data import fetch_stock_data
+from screener import SCAN_PRESETS, run_preset_scan, run_custom_screener, load_and_calculate_all
 from tickers import NIFTY50_TICKERS
 
 
@@ -29,6 +28,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# --------------------------------------------------------------------------
+# Cached Data Loader (fetches ONCE per session, cached for 1 hour)
+# --------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_all_indicators():
+    """Fetch all 50 stocks and calculate indicators. Cached for 1 hour."""
+    return load_and_calculate_all()
 
 
 # --------------------------------------------------------------------------
@@ -62,20 +70,13 @@ def style_bool(val):
 # --------------------------------------------------------------------------
 # Helper: Mini Price Chart
 # --------------------------------------------------------------------------
-def render_mini_chart(ticker: str, df_indicators: pd.DataFrame):
-    """
-    Render a Plotly line chart showing price + SMA50 + SMA200
-    for the selected ticker.
-    """
-    from data import fetch_all_stocks_data
-
-    # Fetch raw data for this ticker (cached)
-    data, _ = fetch_all_stocks_data([ticker], period_days=180)
-    if ticker not in data:
+def render_mini_chart(ticker: str):
+    """Render a Plotly line chart showing price + SMA50 + SMA200."""
+    # Fetch 6 months of raw data for chart (cached per ticker)
+    df = fetch_stock_data(ticker, period_days=180)
+    if df is None or df.empty:
         st.warning(f"No chart data for {ticker}")
         return
-
-    df = data[ticker]
 
     fig = go.Figure()
 
@@ -89,27 +90,24 @@ def render_mini_chart(ticker: str, df_indicators: pd.DataFrame):
     ))
 
     # SMA 50
-    if "sma50" in df_indicators.columns:
-        # Calculate SMA 50 from raw data for the chart
-        sma50 = df["Close"].rolling(window=50).mean()
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=sma50,
-            mode="lines",
-            name="SMA 50",
-            line=dict(color="#FFD93D", width=1.5, dash="dash"),
-        ))
+    sma50 = df["Close"].rolling(window=50).mean()
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=sma50,
+        mode="lines",
+        name="SMA 50",
+        line=dict(color="#FFD93D", width=1.5, dash="dash"),
+    ))
 
     # SMA 200
-    if "sma200" in df_indicators.columns:
-        sma200 = df["Close"].rolling(window=200).mean()
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=sma200,
-            mode="lines",
-            name="SMA 200",
-            line=dict(color="#FF6B6B", width=1.5, dash="dot"),
-        ))
+    sma200 = df["Close"].rolling(window=200).mean()
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=sma200,
+        mode="lines",
+        name="SMA 200",
+        line=dict(color="#FF6B6B", width=1.5, dash="dot"),
+    ))
 
     fig.update_layout(
         template="plotly_dark",
@@ -131,10 +129,33 @@ def main():
     st.title("📈 Nifty 50 Stock Screener")
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST")
 
+    # ── Load Data ONCE (cached for 1 hour) ──────────────────────────────
+    # This fetches all 50 stocks on first load, then is instant on refreshes.
+    # Changing presets does NOT re-fetch — it only re-filters.
+    if "indicators_df" not in st.session_state:
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+
+        def update_progress(current, total, ticker):
+            progress_text.text(f"Loading {ticker}... ({current}/{total})")
+            progress_bar.progress(current / total)
+
+        indicators_df, failed_tickers = load_and_calculate_all(
+            progress_callback=update_progress
+        )
+
+        progress_text.empty()
+        progress_bar.empty()
+
+        st.session_state.indicators_df = indicators_df
+        st.session_state.failed_tickers = failed_tickers
+
+    indicators_df = st.session_state.indicators_df
+    failed_tickers = st.session_state.failed_tickers
+
     # ── Sidebar ─────────────────────────────────────────────────────────
     st.sidebar.header("🔍 Scan Settings")
 
-    # Choose between preset scan and custom filters
     scan_mode = st.sidebar.radio(
         "Select scan mode:",
         ["Preset Scans", "Custom Filters"],
@@ -179,69 +200,45 @@ def main():
             "pct_from_52w_low_max": pct_from_52w_low_max if pct_from_52w_low_max < 100 else None,
         }
 
-    # ── Main Content ────────────────────────────────────────────────────
-    if not run_button:
-        st.info("👈 Configure your scan in the sidebar and click **Run Scan** to get started.")
+    # ── Stats Overview (always visible) ─────────────────────────────────
+    if not indicators_df.empty:
+        total = len(indicators_df)
+        above_200sma = (indicators_df["price"] > indicators_df["sma200"]).sum()
+        oversold = (indicators_df["rsi"] < 30).sum()
+        overbought = (indicators_df["rsi"] > 70).sum()
 
-        # Show a quick stats overview even before running
-        progress_text = st.empty()
-        progress_bar = st.progress(0)
-
-        def update_progress(current, total, ticker):
-            progress_text.text(f"Loading {ticker}... ({current}/{total})")
-            progress_bar.progress(current / total)
-
-        stock_data, failed = fetch_all_stocks_data(
-            NIFTY50_TICKERS,
-            period_days=365,
-            progress_callback=update_progress
-        )
-        indicators_list, calc_failed = calculate_all_indicators(stock_data)
-        progress_text.empty()
-        progress_bar.empty()
-
-        if indicators_list:
-            df = pd.DataFrame(indicators_list)
-            total = len(df)
-            above_200sma = (df["price"] > df["sma200"]).sum()
-            oversold = (df["rsi"] < 30).sum()
-            overbought = (df["rsi"] > 70).sum()
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Nifty 50 Stocks", f"{total}/50")
-            c2.metric("Above 200-SMA", f"{above_200sma}", f"{above_200sma/total*100:.0f}%")
-            c3.metric("Oversold (RSI<30)", f"{oversold}", delta=None, delta_color="inverse")
-            c4.metric("Overbought (RSI>70)", f"{overbought}", delta=None, delta_color="inverse")
-
-        if failed or calc_failed:
-            all_failed = list(set(failed + calc_failed))
-            st.warning(f"⚠️ Failed to load {len(all_failed)} tickers: {', '.join(all_failed[:5])}{'...' if len(all_failed) > 5 else ''}")
-
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Nifty 50 Stocks", f"{total}/50")
+        c2.metric("Above 200-SMA", f"{above_200sma}", f"{above_200sma/total*100:.0f}%")
+        c3.metric("Oversold (RSI<30)", f"{oversold}", delta=None, delta_color="inverse")
+        c4.metric("Overbought (RSI>70)", f"{overbought}", delta=None, delta_color="inverse")
+    else:
+        st.error("❌ Failed to load stock data. Please refresh the page.")
         return
 
-    # ── Run the Scan ────────────────────────────────────────────────────
+    if failed_tickers:
+        st.warning(f"⚠️ Failed to load {len(failed_tickers)} tickers: {', '.join(failed_tickers[:5])}{'...' if len(failed_tickers) > 5 else ''}")
+
+    # ── Main Content ────────────────────────────────────────────────────
+    if not run_button:
+        st.info("👈 Choose a preset scan or custom filters, then click **Run Scan**.")
+        return
+
+    # ── Run the Scan (NO re-fetching — just filters existing data) ──────
     start_time = time.time()
 
-    progress_text = st.empty()
-    progress_bar = st.progress(0)
-
-    def update_progress(current, total, ticker):
-        progress_text.text(f"Scanning {ticker}... ({current}/{total})")
-        progress_bar.progress(current / total)
-
     if scan_mode == "Preset Scans":
-        result_df, failed_tickers, total_scanned = run_preset_scan(
+        result_df, scan_failed, total_scanned = run_preset_scan(
             filters["preset"],
-            progress_callback=update_progress
+            indicators_df=indicators_df,
+            failed_tickers=failed_tickers,
         )
     else:
-        result_df, failed_tickers, total_scanned = run_custom_screener(
-            progress_callback=update_progress,
-            **filters
+        result_df, scan_failed, total_scanned = run_custom_screener(
+            indicators_df=indicators_df,
+            failed_tickers=failed_tickers,
+            **filters,
         )
-
-    progress_text.empty()
-    progress_bar.empty()
 
     elapsed = time.time() - start_time
 
@@ -249,11 +246,8 @@ def main():
     matched = len(result_df)
     c1, c2, c3 = st.columns(3)
     c1.metric("Stocks Matched", f"{matched}/{total_scanned}")
-    c2.metric("Scan Time", f"{elapsed:.1f}s")
-    c3.metric("Failed Tickers", len(failed_tickers))
-
-    if failed_tickers:
-        st.warning(f"⚠️ Failed to load: {', '.join(failed_tickers)}")
+    c2.metric("Scan Time", f"{elapsed:.2f}s")
+    c3.metric("Failed Tickers", len(scan_failed))
 
     if matched == 0:
         st.info("No stocks matched your criteria. Try relaxing the filters.")
@@ -266,7 +260,6 @@ def main():
     if "rsi" in result_df.columns:
         result_df = result_df.sort_values("rsi", ascending=True, na_position="last")
 
-    # Reorder columns for display
     display_cols = ["ticker", "price", "rsi", "sma50", "sma200", "macd_bullish", "volume_spike", "pct_from_52w_high", "pct_from_52w_low"]
     display_cols = [c for c in display_cols if c in result_df.columns]
 
@@ -296,15 +289,13 @@ def main():
 
     # ── Mini Charts ─────────────────────────────────────────────────────
     st.subheader("📊 Price Charts")
-    st.caption("Click on a ticker row to view its chart (feature: expand rows below)")
+    st.caption("Expand rows below to view charts")
 
-    # Show expandable charts for each result
     for _, row in result_df.iterrows():
         ticker = row["ticker"]
         with st.expander(f"📈 {ticker} — ₹{row['price']:.2f} | RSI: {row['rsi']:.1f}"):
-            render_mini_chart(ticker, result_df)
+            render_mini_chart(ticker)
 
-            # Quick stats
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("SMA 50", f"₹{row['sma50']:,.2f}" if pd.notna(row['sma50']) else "N/A")
             c2.metric("SMA 200", f"₹{row['sma200']:,.2f}" if pd.notna(row['sma200']) else "N/A")
